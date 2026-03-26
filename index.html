@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trump Approval vs. Gas Prices</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg:       #0d1117;
+      --surface:  #161b22;
+      --border:   #30363d;
+      --text:     #e6edf3;
+      --muted:    #7d8590;
+      --purple:   #a371f7;
+      --gold:     #f0b429;
+      --green:    #3fb950;
+      --red:      #f85149;
+      --blue:     #58a6ff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      padding: 24px 20px 40px;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    header { margin-bottom: 24px; }
+    h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 4px; }
+    .subtitle { color: var(--muted); font-size: 0.875rem; }
+
+    /* Controls */
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 20px;
+      align-items: center;
+      padding: 14px 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 18px;
+    }
+    .ctrl-group { display: flex; align-items: center; gap: 8px; }
+    .ctrl-group label { color: var(--muted); font-size: 0.8125rem; white-space: nowrap; }
+    select, input[type="date"] {
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 5px 8px;
+      font-size: 0.875rem;
+      cursor: pointer;
+      color-scheme: dark;
+    }
+    select:focus, input:focus { outline: none; border-color: var(--purple); }
+
+    /* Stat cards */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 14px;
+    }
+    .stat-label {
+      font-size: 0.6875rem;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--muted);
+      margin-bottom: 3px;
+    }
+    .stat-value {
+      font-size: 1.6rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.1;
+    }
+    .stat-sub { font-size: 0.75rem; color: var(--muted); margin-top: 2px; }
+
+    /* Chart grid */
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 16px;
+    }
+    @media (min-width: 1000px) {
+      .grid { grid-template-columns: 3fr 2fr; }
+    }
+    .chart-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px;
+    }
+    .chart-title {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--muted);
+      margin-bottom: 12px;
+      font-weight: 600;
+    }
+
+    /* Error / loading */
+    #error-box {
+      display: none;
+      background: #1a0a0a;
+      border: 1px solid var(--red);
+      border-radius: 8px;
+      padding: 14px 16px;
+      color: #ffa198;
+      margin-bottom: 18px;
+      font-size: 0.875rem;
+    }
+    #error-box code {
+      background: #2a0d0d;
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-family: monospace;
+    }
+
+    .footer {
+      margin-top: 28px;
+      font-size: 0.75rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    .footer a { color: var(--muted); text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Trump Net Approval vs. U.S. Gas Prices</h1>
+  <p class="subtitle">Net approval (approve − disapprove) compared to weekly national average retail gasoline price</p>
+</header>
+
+<div id="error-box"></div>
+
+<div class="controls">
+  <div class="ctrl-group">
+    <label for="partySelect">Approval among:</label>
+    <select id="partySelect">
+      <option value="all">All Adults</option>
+      <option value="voters">Registered Voters</option>
+      <option value="democrat">Democrats</option>
+      <option value="republican">Republicans</option>
+      <option value="independent">Independents</option>
+    </select>
+  </div>
+  <div class="ctrl-group">
+    <label for="startDate">From:</label>
+    <input type="date" id="startDate">
+  </div>
+  <div class="ctrl-group">
+    <label for="endDate">To:</label>
+    <input type="date" id="endDate">
+  </div>
+</div>
+
+<div class="stats">
+  <div class="stat-card">
+    <div class="stat-label">Pearson r</div>
+    <div class="stat-value" id="s-r">—</div>
+    <div class="stat-sub" id="s-r-desc">—</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">R²</div>
+    <div class="stat-value" id="s-r2">—</div>
+    <div class="stat-sub" id="s-r2-desc">—</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Latest Net Approval</div>
+    <div class="stat-value" id="s-approval">—</div>
+    <div class="stat-sub" id="s-approval-date">—</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Latest Gas Price</div>
+    <div class="stat-value" id="s-gas">—</div>
+    <div class="stat-sub" id="s-gas-date">per gallon</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Data Points</div>
+    <div class="stat-value" id="s-n">—</div>
+    <div class="stat-sub" id="s-updated">—</div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="chart-card">
+    <div class="chart-title">Time Series — Net Approval &amp; Gas Price</div>
+    <canvas id="tsChart" height="300"></canvas>
+  </div>
+  <div class="chart-card">
+    <div class="chart-title">Scatter — Net Approval vs. Gas Price</div>
+    <canvas id="scChart" height="300"></canvas>
+  </div>
+</div>
+
+<div class="footer">
+  Approval: <a href="https://projects.fivethirtyeight.com" target="_blank" rel="noopener">FiveThirtyEight</a>
+  &nbsp;·&nbsp;
+  Gas prices: <a href="https://www.eia.gov/petroleum/gasdiesel/" target="_blank" rel="noopener">U.S. EIA</a> (weekly national retail regular, series EMM_EPMRR_PTE_NUS_DPG)
+  &nbsp;·&nbsp;
+  Updated daily via GitHub Actions
+</div>
+
+<script>
+// ─── State ────────────────────────────────────────────────────────────────────
+let approvalRaw = null;
+let gasRaw = null;
+let tsChart = null;
+let scChart = null;
+
+// ─── Bootstrap ────────────────────────────────────────────────────────────────
+async function init() {
+  try {
+    const [aRes, gRes] = await Promise.all([
+      fetch('data/approval.json'),
+      fetch('data/gas_prices.json'),
+    ]);
+    if (!aRes.ok) throw new Error('data/approval.json not found — run: python fetch_data.py');
+    if (!gRes.ok) throw new Error('data/gas_prices.json not found — run: python fetch_data.py');
+    approvalRaw = await aRes.json();
+    gasRaw      = await gRes.json();
+    initDateRange();
+    render();
+  } catch (err) {
+    showError(err.message);
+  }
+}
+
+function showError(msg) {
+  const el = document.getElementById('error-box');
+  el.innerHTML = `<strong>Data unavailable:</strong> ${msg}<br>
+    Run <code>pip install -r requirements.txt && python fetch_data.py</code> then refresh.`;
+  el.style.display = 'block';
+}
+
+// ─── Date range ───────────────────────────────────────────────────────────────
+function initDateRange() {
+  const dates = [
+    ...Object.keys(approvalRaw.data),
+    ...Object.keys(gasRaw.data),
+  ].sort();
+  const min = dates[0];
+  const max = dates[dates.length - 1];
+  ['startDate', 'endDate'].forEach(id => {
+    const el = document.getElementById(id);
+    el.min = min; el.max = max;
+  });
+  document.getElementById('startDate').value = min;
+  document.getElementById('endDate').value   = max;
+}
+
+// ─── Data merging ─────────────────────────────────────────────────────────────
+function mergeData(party, startDate, endDate) {
+  const gasMap      = gasRaw.data;
+  const approvalMap = approvalRaw.data;
+  const approvalDates = Object.keys(approvalMap).sort();
+
+  const gasDates = Object.keys(gasMap)
+    .filter(d => d >= startDate && d <= endDate)
+    .sort();
+
+  const merged = [];
+  for (const gDate of gasDates) {
+    const net = closestApproval(approvalDates, approvalMap, gDate, party);
+    if (net !== null) {
+      merged.push({ date: gDate, gas: gasMap[gDate], net });
+    }
+  }
+  return merged;
+}
+
+function closestApproval(sortedDates, approvalMap, target, party) {
+  const tMs = new Date(target).getTime();
+  let best = null, bestDiff = Infinity;
+  for (const d of sortedDates) {
+    const diff = Math.abs(new Date(d).getTime() - tMs);
+    if (diff < bestDiff) { bestDiff = diff; best = d; }
+    if (diff > bestDiff) break; // sorted, can exit early once we start going further
+  }
+  if (!best || bestDiff > 28 * 86400_000) return null; // >4 weeks gap
+  const dayData = approvalMap[best];
+  if (!dayData) return null;
+  const entry = dayData[party] ?? dayData['all'] ?? dayData['voters'];
+  return entry ? entry.net : null;
+}
+
+// ─── Statistics ───────────────────────────────────────────────────────────────
+function pearsonR(data) {
+  const n = data.length;
+  if (n < 3) return null;
+  const xs = data.map(d => d.net);
+  const ys = data.map(d => d.gas);
+  const mx = mean(xs), my = mean(ys);
+  let num = 0, dx2 = 0, dy2 = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = xs[i] - mx, dy = ys[i] - my;
+    num += dx * dy; dx2 += dx * dx; dy2 += dy * dy;
+  }
+  const denom = Math.sqrt(dx2 * dy2);
+  return denom === 0 ? 0 : num / denom;
+}
+
+function linReg(data) {
+  const xs = data.map(d => d.net);
+  const ys = data.map(d => d.gas);
+  const mx = mean(xs), my = mean(ys);
+  let num = 0, denom = 0;
+  for (let i = 0; i < xs.length; i++) {
+    num   += (xs[i] - mx) * (ys[i] - my);
+    denom += (xs[i] - mx) ** 2;
+  }
+  const slope = denom ? num / denom : 0;
+  return { slope, intercept: my - slope * mx };
+}
+
+function mean(arr) { return arr.reduce((a, b) => a + b, 0) / arr.length; }
+
+function describeR(r) {
+  const a = Math.abs(r);
+  const dir = r >= 0 ? 'positive' : 'negative';
+  if (a < 0.1) return 'negligible';
+  if (a < 0.3) return `weak ${dir}`;
+  if (a < 0.5) return `moderate ${dir}`;
+  if (a < 0.7) return `strong ${dir}`;
+  return `very strong ${dir}`;
+}
+
+// ─── Render ───────────────────────────────────────────────────────────────────
+function render() {
+  const party     = document.getElementById('partySelect').value;
+  const startDate = document.getElementById('startDate').value;
+  const endDate   = document.getElementById('endDate').value;
+  if (!startDate || !endDate) return;
+
+  const data = mergeData(party, startDate, endDate);
+  if (!data.length) {
+    showError(`No overlapping data for "${party}" in the selected range. Try "All Adults".`);
+    return;
+  }
+  document.getElementById('error-box').style.display = 'none';
+
+  const r  = pearsonR(data);
+  const r2 = r !== null ? r * r : null;
+
+  // Stats
+  setText('s-r', r !== null ? r.toFixed(3) : '—');
+  colorEl('s-r', r);
+  setText('s-r-desc', r !== null ? describeR(r) : '');
+
+  setText('s-r2', r2 !== null ? r2.toFixed(3) : '—');
+  setText('s-r2-desc', r2 !== null ? `${(r2 * 100).toFixed(1)}% variance explained` : '');
+
+  const last = data[data.length - 1];
+  setText('s-approval', last ? fmt(last.net, '+.1') + '%' : '—');
+  colorEl('s-approval', last ? last.net : null);
+  setText('s-approval-date', last ? last.date : '');
+
+  setText('s-gas', last ? '$' + last.gas.toFixed(3) : '—');
+  setText('s-gas-date', last ? last.date : 'per gallon');
+
+  setText('s-n', data.length);
+  setText('s-updated', approvalRaw.updated ? 'as of ' + approvalRaw.updated.slice(0, 10) : '');
+
+  drawTimeSeries(data);
+  drawScatter(data, r);
+}
+
+function setText(id, v) { document.getElementById(id).textContent = v; }
+function colorEl(id, v) {
+  const el = document.getElementById(id);
+  if (v === null) { el.style.color = ''; return; }
+  el.style.color = v >= 0 ? 'var(--green)' : 'var(--red)';
+}
+function fmt(n, style) {
+  if (style === '+.1') return (n >= 0 ? '+' : '') + n.toFixed(1);
+  return n;
+}
+
+// ─── Chart: Time Series ───────────────────────────────────────────────────────
+const CHART_OPTS = {
+  responsive: true,
+  maintainAspectRatio: true,
+  interaction: { mode: 'index', intersect: false },
+  plugins: {
+    legend: { labels: { color: '#7d8590', boxWidth: 12, font: { size: 11 } } },
+  },
+  scales: {
+    x: { ticks: { color: '#7d8590', maxTicksLimit: 8, maxRotation: 0 }, grid: { color: '#21262d' } },
+  },
+};
+
+function drawTimeSeries(data) {
+  const labels   = data.map(d => d.date);
+  const approval = data.map(d => d.net);
+  const gas      = data.map(d => d.gas);
+
+  const ctx = document.getElementById('tsChart').getContext('2d');
+  if (tsChart) tsChart.destroy();
+
+  tsChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Net Approval (%)',
+          data: approval,
+          borderColor: '#a371f7',
+          backgroundColor: 'rgba(163,113,247,0.07)',
+          fill: true,
+          tension: 0.35,
+          yAxisID: 'yA',
+          pointRadius: 2,
+          pointHoverRadius: 5,
+          borderWidth: 1.5,
+        },
+        {
+          label: 'Gas Price ($/gal)',
+          data: gas,
+          borderColor: '#f0b429',
+          backgroundColor: 'transparent',
+          tension: 0.35,
+          yAxisID: 'yG',
+          pointRadius: 2,
+          pointHoverRadius: 5,
+          borderWidth: 1.5,
+        },
+      ],
+    },
+    options: {
+      ...CHART_OPTS,
+      plugins: {
+        ...CHART_OPTS.plugins,
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              if (ctx.datasetIndex === 0) return ` Net approval: ${ctx.parsed.y.toFixed(1)}%`;
+              return ` Gas: $${ctx.parsed.y.toFixed(3)}/gal`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: CHART_OPTS.scales.x,
+        yA: {
+          type: 'linear',
+          position: 'left',
+          title: { display: true, text: 'Net Approval (%)', color: '#a371f7', font: { size: 11 } },
+          ticks: { color: '#a371f7', callback: v => v.toFixed(0) + '%' },
+          grid: { color: '#21262d' },
+        },
+        yG: {
+          type: 'linear',
+          position: 'right',
+          title: { display: true, text: '$/gal', color: '#f0b429', font: { size: 11 } },
+          ticks: { color: '#f0b429', callback: v => '$' + v.toFixed(2) },
+          grid: { drawOnChartArea: false },
+        },
+      },
+    },
+  });
+}
+
+// ─── Chart: Scatter ───────────────────────────────────────────────────────────
+function drawScatter(data, r) {
+  const points = data.map(d => ({ x: d.net, y: d.gas, date: d.date }));
+  const reg    = linReg(data);
+  const xs     = data.map(d => d.net);
+  const xMin   = Math.min(...xs), xMax = Math.max(...xs);
+  const regLine = [
+    { x: xMin, y: reg.slope * xMin + reg.intercept },
+    { x: xMax, y: reg.slope * xMax + reg.intercept },
+  ];
+
+  const ctx = document.getElementById('scChart').getContext('2d');
+  if (scChart) scChart.destroy();
+
+  scChart = new Chart(ctx, {
+    type: 'scatter',
+    data: {
+      datasets: [
+        {
+          label: 'Weekly obs.',
+          data: points,
+          backgroundColor: 'rgba(88,166,255,0.45)',
+          borderColor: 'rgba(88,166,255,0.8)',
+          borderWidth: 1,
+          pointRadius: 4,
+          pointHoverRadius: 6,
+        },
+        {
+          label: `Regression (r=${r !== null ? r.toFixed(3) : '?'})`,
+          data: regLine,
+          type: 'line',
+          borderColor: '#f85149',
+          borderWidth: 1.5,
+          backgroundColor: 'transparent',
+          pointRadius: 0,
+          tension: 0,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      plugins: {
+        legend: { labels: { color: '#7d8590', boxWidth: 12, font: { size: 11 } } },
+        tooltip: {
+          filter: item => item.datasetIndex === 0,
+          callbacks: {
+            label: ctx => ` ${ctx.raw.date}  net: ${ctx.parsed.x.toFixed(1)}%  gas: $${ctx.parsed.y.toFixed(3)}`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          title: { display: true, text: 'Net Approval (%)', color: '#7d8590', font: { size: 11 } },
+          ticks: { color: '#7d8590', callback: v => v + '%' },
+          grid: { color: '#21262d' },
+        },
+        y: {
+          title: { display: true, text: 'Gas Price ($/gal)', color: '#7d8590', font: { size: 11 } },
+          ticks: { color: '#7d8590', callback: v => '$' + v.toFixed(2) },
+          grid: { color: '#21262d' },
+        },
+      },
+    },
+  });
+}
+
+// ─── Event listeners ──────────────────────────────────────────────────────────
+['partySelect', 'startDate', 'endDate'].forEach(id =>
+  document.getElementById(id).addEventListener('change', render)
+);
+
+// ─── Go ───────────────────────────────────────────────────────────────────────
+init();
+</script>
+</body>
+</html>
