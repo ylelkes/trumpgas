@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Trump Approval vs. Gas Prices</title>
+  <title>Trump Approval &amp; Generic Ballot vs. Gas Prices</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
   <style>
     :root {
@@ -143,21 +143,18 @@
 <body>
 
 <header>
-  <h1>Trump Net Approval vs. U.S. Gas Prices</h1>
-  <p class="subtitle">Net approval (approve − disapprove) compared to weekly national average retail gasoline price</p>
+  <h1>Trump Approval &amp; Generic Ballot vs. U.S. Gas Prices</h1>
+  <p class="subtitle">28-day weighted polling average compared to weekly national retail gasoline price (EIA)</p>
 </header>
 
 <div id="error-box"></div>
 
 <div class="controls">
   <div class="ctrl-group">
-    <label for="partySelect">Approval among:</label>
-    <select id="partySelect">
-      <option value="all">All Adults</option>
-      <option value="voters">Registered Voters</option>
-      <option value="democrat">Democrats</option>
-      <option value="republican">Republicans</option>
-      <option value="independent">Independents</option>
+    <label for="metricSelect">Metric:</label>
+    <select id="metricSelect">
+      <option value="approval">Trump Net Approval</option>
+      <option value="generic_ballot">Generic Ballot (D−R)</option>
     </select>
   </div>
   <div class="ctrl-group">
@@ -182,7 +179,7 @@
     <div class="stat-sub" id="s-r2-desc">—</div>
   </div>
   <div class="stat-card">
-    <div class="stat-label">Latest Net Approval</div>
+    <div class="stat-label" id="s-approval-label">Latest Net</div>
     <div class="stat-value" id="s-approval">—</div>
     <div class="stat-sub" id="s-approval-date">—</div>
   </div>
@@ -200,17 +197,17 @@
 
 <div class="grid">
   <div class="chart-card">
-    <div class="chart-title">Time Series — Net Approval &amp; Gas Price</div>
+    <div class="chart-title">Time Series — Polling Average &amp; Gas Price</div>
     <canvas id="tsChart" height="300"></canvas>
   </div>
   <div class="chart-card">
-    <div class="chart-title">Scatter — Net Approval vs. Gas Price</div>
+    <div class="chart-title">Scatter — Polling Average vs. Gas Price</div>
     <canvas id="scChart" height="300"></canvas>
   </div>
 </div>
 
 <div class="footer">
-  Approval: <a href="https://projects.fivethirtyeight.com" target="_blank" rel="noopener">FiveThirtyEight</a>
+  Polling averages: <a href="https://www.natesilver.net" target="_blank" rel="noopener">Nate Silver / 538</a>
   &nbsp;·&nbsp;
   Gas prices: <a href="https://www.eia.gov/petroleum/gasdiesel/" target="_blank" rel="noopener">U.S. EIA</a> (weekly national retail regular, series EMM_EPMRR_PTE_NUS_DPG)
   &nbsp;·&nbsp;
@@ -220,20 +217,24 @@
 <script>
 // ─── State ────────────────────────────────────────────────────────────────────
 let approvalRaw = null;
-let gasRaw = null;
+let genericRaw  = null;
+let gasRaw      = null;
 let tsChart = null;
 let scChart = null;
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 async function init() {
   try {
-    const [aRes, gRes] = await Promise.all([
+    const [aRes, gbRes, gRes] = await Promise.all([
       fetch('data/approval.json'),
+      fetch('data/generic_ballot.json'),
       fetch('data/gas_prices.json'),
     ]);
-    if (!aRes.ok) throw new Error('data/approval.json not found — run: python fetch_data.py');
-    if (!gRes.ok) throw new Error('data/gas_prices.json not found — run: python fetch_data.py');
+    if (!aRes.ok)  throw new Error('data/approval.json not found — run: python fetch_data.py');
+    if (!gbRes.ok) throw new Error('data/generic_ballot.json not found — run: python fetch_data.py');
+    if (!gRes.ok)  throw new Error('data/gas_prices.json not found — run: python fetch_data.py');
     approvalRaw = await aRes.json();
+    genericRaw  = await gbRes.json();
     gasRaw      = await gRes.json();
     initDateRange();
     render();
@@ -253,6 +254,7 @@ function showError(msg) {
 function initDateRange() {
   const dates = [
     ...Object.keys(approvalRaw.data),
+    ...Object.keys(genericRaw.data),
     ...Object.keys(gasRaw.data),
   ].sort();
   const min = dates[0];
@@ -266,10 +268,10 @@ function initDateRange() {
 }
 
 // ─── Data merging ─────────────────────────────────────────────────────────────
-function mergeData(party, startDate, endDate) {
-  const gasMap      = gasRaw.data;
-  const approvalMap = approvalRaw.data;
-  const approvalDates = Object.keys(approvalMap).sort();
+function mergeData(metric, startDate, endDate) {
+  const gasMap    = gasRaw.data;
+  const metricMap = metric === 'approval' ? approvalRaw.data : genericRaw.data;
+  const metricDates = Object.keys(metricMap).sort();
 
   const gasDates = Object.keys(gasMap)
     .filter(d => d >= startDate && d <= endDate)
@@ -277,7 +279,7 @@ function mergeData(party, startDate, endDate) {
 
   const merged = [];
   for (const gDate of gasDates) {
-    const net = closestApproval(approvalDates, approvalMap, gDate, party);
+    const net = closestValue(metricDates, metricMap, gDate);
     if (net !== null) {
       merged.push({ date: gDate, gas: gasMap[gDate], net });
     }
@@ -285,19 +287,16 @@ function mergeData(party, startDate, endDate) {
   return merged;
 }
 
-function closestApproval(sortedDates, approvalMap, target, party) {
+function closestValue(sortedDates, dataMap, target) {
   const tMs = new Date(target).getTime();
   let best = null, bestDiff = Infinity;
   for (const d of sortedDates) {
     const diff = Math.abs(new Date(d).getTime() - tMs);
     if (diff < bestDiff) { bestDiff = diff; best = d; }
-    if (diff > bestDiff) break; // sorted, can exit early once we start going further
+    if (diff > bestDiff) break;
   }
-  if (!best || bestDiff > 28 * 86400_000) return null; // >4 weeks gap
-  const dayData = approvalMap[best];
-  if (!dayData) return null;
-  const entry = dayData[party] ?? dayData['all'] ?? dayData['voters'];
-  return entry ? entry.net : null;
+  if (!best || bestDiff > 28 * 86400_000) return null;
+  return dataMap[best] ?? null;
 }
 
 // ─── Statistics ───────────────────────────────────────────────────────────────
@@ -343,14 +342,16 @@ function describeR(r) {
 
 // ─── Render ───────────────────────────────────────────────────────────────────
 function render() {
-  const party     = document.getElementById('partySelect').value;
+  const metric    = document.getElementById('metricSelect').value;
   const startDate = document.getElementById('startDate').value;
   const endDate   = document.getElementById('endDate').value;
   if (!startDate || !endDate) return;
 
-  const data = mergeData(party, startDate, endDate);
+  const metricLabel = metric === 'approval' ? 'Trump Net Approval' : 'Generic Ballot (D−R)';
+
+  const data = mergeData(metric, startDate, endDate);
   if (!data.length) {
-    showError(`No overlapping data for "${party}" in the selected range. Try "All Adults".`);
+    showError(`No overlapping data in the selected range.`);
     return;
   }
   document.getElementById('error-box').style.display = 'none';
@@ -366,6 +367,7 @@ function render() {
   setText('s-r2', r2 !== null ? r2.toFixed(3) : '—');
   setText('s-r2-desc', r2 !== null ? `${(r2 * 100).toFixed(1)}% variance explained` : '');
 
+  setText('s-approval-label', `Latest ${metricLabel}`);
   const last = data[data.length - 1];
   setText('s-approval', last ? fmt(last.net, '+.1') + '%' : '—');
   colorEl('s-approval', last ? last.net : null);
@@ -375,10 +377,11 @@ function render() {
   setText('s-gas-date', last ? last.date : 'per gallon');
 
   setText('s-n', data.length);
-  setText('s-updated', approvalRaw.updated ? 'as of ' + approvalRaw.updated.slice(0, 10) : '');
+  const srcRaw = metric === 'approval' ? approvalRaw : genericRaw;
+  setText('s-updated', srcRaw.updated ? 'as of ' + srcRaw.updated.slice(0, 10) : '');
 
-  drawTimeSeries(data);
-  drawScatter(data, r);
+  drawTimeSeries(data, metricLabel);
+  drawScatter(data, r, metricLabel);
 }
 
 function setText(id, v) { document.getElementById(id).textContent = v; }
@@ -405,7 +408,7 @@ const CHART_OPTS = {
   },
 };
 
-function drawTimeSeries(data) {
+function drawTimeSeries(data, metricLabel) {
   const labels   = data.map(d => d.date);
   const approval = data.map(d => d.net);
   const gas      = data.map(d => d.gas);
@@ -419,7 +422,7 @@ function drawTimeSeries(data) {
       labels,
       datasets: [
         {
-          label: 'Net Approval (%)',
+          label: metricLabel + ' (%)',
           data: approval,
           borderColor: '#a371f7',
           backgroundColor: 'rgba(163,113,247,0.07)',
@@ -450,7 +453,7 @@ function drawTimeSeries(data) {
         tooltip: {
           callbacks: {
             label: ctx => {
-              if (ctx.datasetIndex === 0) return ` Net approval: ${ctx.parsed.y.toFixed(1)}%`;
+              if (ctx.datasetIndex === 0) return ` ${metricLabel}: ${ctx.parsed.y.toFixed(1)}%`;
               return ` Gas: $${ctx.parsed.y.toFixed(3)}/gal`;
             },
           },
@@ -461,7 +464,7 @@ function drawTimeSeries(data) {
         yA: {
           type: 'linear',
           position: 'left',
-          title: { display: true, text: 'Net Approval (%)', color: '#a371f7', font: { size: 11 } },
+          title: { display: true, text: metricLabel + ' (%)', color: '#a371f7', font: { size: 11 } },
           ticks: { color: '#a371f7', callback: v => v.toFixed(0) + '%' },
           grid: { color: '#21262d' },
         },
@@ -478,7 +481,7 @@ function drawTimeSeries(data) {
 }
 
 // ─── Chart: Scatter ───────────────────────────────────────────────────────────
-function drawScatter(data, r) {
+function drawScatter(data, r, metricLabel) {
   const points = data.map(d => ({ x: d.net, y: d.gas, date: d.date }));
   const reg    = linReg(data);
   const xs     = data.map(d => d.net);
@@ -524,13 +527,13 @@ function drawScatter(data, r) {
         tooltip: {
           filter: item => item.datasetIndex === 0,
           callbacks: {
-            label: ctx => ` ${ctx.raw.date}  net: ${ctx.parsed.x.toFixed(1)}%  gas: $${ctx.parsed.y.toFixed(3)}`,
+            label: ctx => ` ${ctx.raw.date}  ${metricLabel}: ${ctx.parsed.x.toFixed(1)}%  gas: $${ctx.parsed.y.toFixed(3)}`,
           },
         },
       },
       scales: {
         x: {
-          title: { display: true, text: 'Net Approval (%)', color: '#7d8590', font: { size: 11 } },
+          title: { display: true, text: metricLabel + ' (%)', color: '#7d8590', font: { size: 11 } },
           ticks: { color: '#7d8590', callback: v => v + '%' },
           grid: { color: '#21262d' },
         },
@@ -545,7 +548,7 @@ function drawScatter(data, r) {
 }
 
 // ─── Event listeners ──────────────────────────────────────────────────────────
-['partySelect', 'startDate', 'endDate'].forEach(id =>
+['metricSelect', 'startDate', 'endDate'].forEach(id =>
   document.getElementById(id).addEventListener('change', render)
 );
 

@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """
-Fetch Trump approval ratings (Civiqs daily tracking) + U.S. gas prices (EIA).
+Fetch Trump approval + generic ballot (Nate Silver / 538) + U.S. gas prices (EIA).
 
-Approval source: civiqs.com/results/approve_president_trump_2025
-  Approval data is decoded from the embedded SVG chart.
-  Parties available: All Adults, Democrats, Republicans, Independents.
-  Daily resolution back to Jan 20, 2025.
-
+Approval source:  https://natesilver.net  (Google Sheets CSV)
+Generic ballot:   https://natesilver.net  (Google Sheets CSV)
 Gas source: EIA API v2, series EMM_EPMRR_PTE_NUS_DPG (weekly retail regular).
 
 Usage:
@@ -17,9 +14,10 @@ Falls back to DEMO_KEY (rate-limited but functional).
 """
 from __future__ import annotations
 
+import csv
+import io
 import json
 import os
-import re
 import sys
 import requests
 from datetime import date, datetime, timedelta
@@ -30,19 +28,18 @@ DATA_DIR.mkdir(exist_ok=True)
 
 EIA_API_KEY = os.environ.get("EIA_API_KEY", "DEMO_KEY")
 
-TRUMP_TERM2_START = date(2025, 1, 20)  # Second inauguration
-CHART_WIDTH = 965                       # Civiqs SVG chart area width  (px)
-CHART_HEIGHT = 315                      # Civiqs SVG chart area height (px)
-# Coordinate calibration: y=0 → 100% approval, y=CHART_HEIGHT → 0% approval
-# Verified: y=195.3 → 38% (matches meta "Approve 38%" for March 25, 2026)
+APPROVAL_CSV = (
+    "https://docs.google.com/spreadsheets/d/e/"
+    "2PACX-1vS-FKWVTTFtJT6u56e0bqdfoMcXvDO1DUChsJ3jQAMB2lZk2SMqVfmg7dGjclTYkYWz-Pm5lfcLPjp4"
+    "/pub?output=csv"
+)
+GENERIC_BALLOT_CSV = (
+    "https://docs.google.com/spreadsheets/d/e/"
+    "2PACX-1vRsvXNCZ0ubJr8D_yNcU5q6C0_HBa35K7oDK03KpO7Ca43UwdXaIdvVLWoXEmHHph0EREz5430Hm5yZ"
+    "/pub?output=csv"
+)
 
-CIVIQS_BASE = "https://civiqs.com/results/approve_president_trump_2025"
-PARTIES = {
-    "all":         "",
-    "democrat":    "&party=Democrat",
-    "republican":  "&party=Republican",
-    "independent": "&party=Independent",
-}
+ROLLING_WINDOW = 28  # days
 
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
@@ -58,133 +55,85 @@ def _get(url: str, label: str = "") -> requests.Response | None:
         return None
 
 
-# ─── Civiqs SVG decoder ───────────────────────────────────────────────────────
+# ─── Rolling average ──────────────────────────────────────────────────────────
 
-def _parse_bezier_path(path_d: str) -> list[tuple[float, float]]:
+def _weighted_rolling_avg(
+    polls: list[tuple[date, float, float]],
+    window: int = ROLLING_WINDOW,
+) -> dict[str, float]:
     """
-    Extract (x, y) anchor-point coordinates from an SVG cubic-bezier path string.
-    The path uses M / L (move/line) and C (cubic bezier) commands without spaces
-    between the command letter and its arguments (e.g. 'M0,173.25L0.375,173.25C…').
+    Given a list of (poll_end_date, value, weight), compute a daily weighted
+    rolling average over `window` days and return {date_str: avg}.
     """
-    spaced = re.sub(r"([MLCmlc])", r" \1 ", path_d)
-    tokens = spaced.split()
-    points: list[tuple[float, float]] = []
-    i = 0
-    while i < len(tokens):
-        cmd = tokens[i]
-        if cmd in ("M", "L"):
-            if i + 1 < len(tokens):
-                parts = tokens[i + 1].split(",")
-                if len(parts) >= 2:
-                    points.append((float(parts[0]), float(parts[1])))
-            i += 2
-        elif cmd == "C":
-            # Cubic bezier: cx1,cy1 cx2,cy2 x,y  ← we want the endpoint x,y
-            if i + 3 < len(tokens):
-                parts = tokens[i + 3].split(",")
-                if len(parts) >= 2:
-                    points.append((float(parts[0]), float(parts[1])))
-            i += 4
-        else:
-            i += 1
-    return points
+    if not polls:
+        return {}
+    polls.sort(key=lambda x: x[0])
+    min_date = polls[0][0]
+    max_date = polls[-1][0]
 
-
-def _decode_series(path_d: str, end_date: date) -> list[tuple[str, float]]:
-    """Convert an SVG path → [(date_str, approval_pct), …]."""
-    pts = _parse_bezier_path(path_d)
-    if not pts:
-        return []
-    total_days = (end_date - TRUMP_TERM2_START).days
-    x_scale = total_days / CHART_WIDTH   # days per SVG pixel
-    result = []
-    for x, y in pts:
-        d = TRUMP_TERM2_START + timedelta(days=round(x * x_scale))
-        pct = round((CHART_HEIGHT - y) / CHART_HEIGHT * 100, 2)
-        result.append((d.isoformat(), pct))
+    result: dict[str, float] = {}
+    current = min_date
+    while current <= max_date:
+        cutoff = current - timedelta(days=window - 1)
+        in_window = [(v, w) for d, v, w in polls if cutoff <= d <= current]
+        if in_window:
+            total_w = sum(w for _, w in in_window)
+            if total_w > 0:
+                avg = sum(v * w for v, w in in_window) / total_w
+                result[current.isoformat()] = round(avg, 2)
+        current += timedelta(days=1)
     return result
 
 
-def _fetch_party(party_key: str, suffix: str) -> dict[str, dict]:
-    """
-    Returns {date_str: {"approve": float, "disapprove": float, "net": float}}
-    for one party subgroup.
-    """
-    url = f"{CIVIQS_BASE}?annotations=true{suffix}"
-    r = _get(url, f"Civiqs [{party_key}]")
-    if r is None:
-        return {}
-
-    # Determine latest date from the meta description
-    meta = re.search(r"Results through (\w+ \d+, \d{4}):", r.text[:5000])
-    end_date = date.today()
-    if meta:
+def _parse_polls(
+    text: str,
+    value_col: str,
+    subgroup: str = "All polls",
+) -> list[tuple[date, float, float]]:
+    """Parse a Nate Silver CSV and return (enddate, adjusted_value, weight) tuples."""
+    reader = csv.DictReader(io.StringIO(text))
+    polls: list[tuple[date, float, float]] = []
+    for row in reader:
+        if row.get("subgroup", "").strip() != subgroup:
+            continue
         try:
-            end_date = datetime.strptime(meta.group(1), "%B %d, %Y").date()
-        except ValueError:
-            pass
+            d = datetime.strptime(row["enddate"].strip(), "%m/%d/%Y").date()
+            v = float(row[value_col].strip())
+            w = float(row.get("weight", "1").strip() or "1")
+            polls.append((d, v, w))
+        except (ValueError, KeyError):
+            continue
+    return polls
 
-    # Locate the 1000×350 chart SVG (attribute order may vary)
-    svg_match = (
-        re.search(
-            r'<svg[^>]*width=["\']1000["\'][^>]*height=["\']350["\'][^>]*>(.*?)</svg>',
-            r.text, re.DOTALL,
-        )
-        or re.search(
-            r'<svg[^>]*height=["\']350["\'][^>]*width=["\']1000["\'][^>]*>(.*?)</svg>',
-            r.text, re.DOTALL,
-        )
-    )
-    if not svg_match:
-        print(f"  ERROR: chart SVG not found for [{party_key}]")
-        return {}
 
-    svg = svg_match.group(1)
-    trendlines = re.findall(
-        r'data-testid=["\']timeseries-line["\'][^>]*d=["\']([^"\']+)["\']', svg
-    )
-    if len(trendlines) < 2:
-        print(f"  WARNING: only {len(trendlines)} trendlines for [{party_key}]")
-        return {}
+# ─── Approval ─────────────────────────────────────────────────────────────────
 
-    approve_series    = _decode_series(trendlines[0], end_date)
-    disapprove_series = _decode_series(trendlines[1], end_date)
-
-    result: dict[str, dict] = {}
-    for (d, app), (_, dis) in zip(approve_series, disapprove_series):
-        result[d] = {
-            "approve":    app,
-            "disapprove": dis,
-            "net":        round(app - dis, 2),
-        }
-
-    print(f"  {len(result)} pts  latest={max(result)} approve={result[max(result)]['approve']}%")
+def fetch_approval() -> dict[str, float]:
+    print("Fetching Trump approval from Nate Silver…")
+    r = _get(APPROVAL_CSV, "Approval CSV")
+    if r is None:
+        raise RuntimeError("Approval CSV fetch failed")
+    polls = _parse_polls(r.text, "adjusted_net")
+    if not polls:
+        raise RuntimeError("No approval polls parsed")
+    result = _weighted_rolling_avg(polls)
+    print(f"  {len(polls)} polls → {len(result)} daily pts  latest={max(result)} net={result[max(result)]:+.2f}%")
     return result
 
 
-def fetch_approval() -> dict[str, dict]:
-    """Fetch all-party approval from Civiqs SVG data."""
-    print("Fetching approval data from Civiqs…")
+# ─── Generic ballot ───────────────────────────────────────────────────────────
 
-    party_series: dict[str, dict] = {}
-    for party_key, suffix in PARTIES.items():
-        series = _fetch_party(party_key, suffix)
-        if series:
-            party_series[party_key] = series
-
-    if not party_series:
-        return {}
-
-    # Combine into {date: {party_key: {approve, disapprove, net}}}
-    all_dates = sorted({d for s in party_series.values() for d in s})
-    combined: dict[str, dict] = {}
-    for d in all_dates:
-        entry = {pk: s[d] for pk, s in party_series.items() if d in s}
-        if entry:
-            combined[d] = entry
-
-    print(f"  Combined: {len(combined)} dates × {len(party_series)} parties")
-    return combined
+def fetch_generic_ballot() -> dict[str, float]:
+    print("Fetching generic ballot from Nate Silver…")
+    r = _get(GENERIC_BALLOT_CSV, "Generic ballot CSV")
+    if r is None:
+        raise RuntimeError("Generic ballot CSV fetch failed")
+    polls = _parse_polls(r.text, "adjusted_net")
+    if not polls:
+        raise RuntimeError("No generic ballot polls parsed")
+    result = _weighted_rolling_avg(polls)
+    print(f"  {len(polls)} polls → {len(result)} daily pts  latest={max(result)} D-R={result[max(result)]:+.2f}%")
+    return result
 
 
 # ─── EIA gas prices ───────────────────────────────────────────────────────────
@@ -216,28 +165,47 @@ def fetch_gas_prices() -> dict[str, float]:
 
 def main() -> None:
     failed: list[str] = []
+    now = datetime.utcnow().isoformat() + "Z"
 
     # ── Approval ────────────────────────────────────────────────────────────
-    approval = fetch_approval()
-    if approval:
+    try:
+        approval = fetch_approval()
         (DATA_DIR / "approval.json").write_text(json.dumps({
-            "updated": datetime.utcnow().isoformat() + "Z",
-            "source":  "Civiqs daily tracking poll (civiqs.com)",
-            "note":    "Decoded from embedded SVG chart. Parties: all, democrat, republican, independent.",
+            "updated": now,
+            "source":  "Nate Silver / 538 (natesilver.net) — 28-day weighted rolling avg",
+            "unit":    "net approval (approve − disapprove), %",
             "data":    approval,
         }, indent=2))
-    else:
+    except Exception as e:
         failed.append("approval")
+        print(f"  Approval error: {e}", file=sys.stderr)
         if not (DATA_DIR / "approval.json").exists():
             print("FATAL: no approval data and no cache.", file=sys.stderr)
             sys.exit(1)
         print("  Using cached approval.json")
 
+    # ── Generic ballot ──────────────────────────────────────────────────────
+    try:
+        generic = fetch_generic_ballot()
+        (DATA_DIR / "generic_ballot.json").write_text(json.dumps({
+            "updated": now,
+            "source":  "Nate Silver / 538 (natesilver.net) — 28-day weighted rolling avg",
+            "unit":    "generic ballot net (D − R), %",
+            "data":    generic,
+        }, indent=2))
+    except Exception as e:
+        failed.append("generic_ballot")
+        print(f"  Generic ballot error: {e}", file=sys.stderr)
+        if not (DATA_DIR / "generic_ballot.json").exists():
+            print("FATAL: no generic ballot data and no cache.", file=sys.stderr)
+            sys.exit(1)
+        print("  Using cached generic_ballot.json")
+
     # ── Gas prices ──────────────────────────────────────────────────────────
     try:
         gas = fetch_gas_prices()
         (DATA_DIR / "gas_prices.json").write_text(json.dumps({
-            "updated": datetime.utcnow().isoformat() + "Z",
+            "updated": now,
             "source":  "EIA (EMM_EPMRR_PTE_NUS_DPG)",
             "unit":    "USD per gallon",
             "data":    gas,
