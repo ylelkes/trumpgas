@@ -39,7 +39,7 @@ GENERIC_BALLOT_CSV = (
     "/pub?output=csv"
 )
 
-ROLLING_WINDOW = 28  # days
+ROLLING_WINDOW = 5  # days
 
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
@@ -172,7 +172,7 @@ def main() -> None:
         approval = fetch_approval()
         (DATA_DIR / "approval.json").write_text(json.dumps({
             "updated": now,
-            "source":  "Nate Silver / 538 (natesilver.net) — 28-day weighted rolling avg",
+            "source":  "Nate Silver / 538 (natesilver.net) — 5-day weighted rolling avg",
             "unit":    "net approval (approve − disapprove), %",
             "data":    approval,
         }, indent=2))
@@ -189,7 +189,7 @@ def main() -> None:
         generic = fetch_generic_ballot()
         (DATA_DIR / "generic_ballot.json").write_text(json.dumps({
             "updated": now,
-            "source":  "Nate Silver / 538 (natesilver.net) — 28-day weighted rolling avg",
+            "source":  "Nate Silver / 538 (natesilver.net) — 5-day weighted rolling avg",
             "unit":    "generic ballot net (D − R), %",
             "data":    generic,
         }, indent=2))
