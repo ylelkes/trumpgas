@@ -209,7 +209,7 @@
 <div class="footer">
   Polling averages: <a href="https://www.natesilver.net" target="_blank" rel="noopener">Nate Silver / 538</a>
   &nbsp;·&nbsp;
-  Gas prices: <a href="https://www.eia.gov/petroleum/gasdiesel/" target="_blank" rel="noopener">U.S. EIA</a> (weekly national retail regular, series EMM_EPMRR_PTE_NUS_DPG)
+  Gas prices: <a href="https://www.eia.gov/petroleum/gasdiesel/" target="_blank" rel="noopener">U.S. EIA</a> (weekly national retail regular, all formulations, series EMM_EPMR_PTE_NUS_DPG)
   &nbsp;·&nbsp;
   Updated daily via GitHub Actions
 </div>
@@ -251,13 +251,15 @@ function showError(msg) {
 }
 
 // ─── Date range ───────────────────────────────────────────────────────────────
+const TERM_START = '2025-01-20';  // Trump's 2nd-term inauguration
+
 function initDateRange() {
   const dates = [
     ...Object.keys(approvalRaw.data),
     ...Object.keys(genericRaw.data),
     ...Object.keys(gasRaw.data),
-  ].sort();
-  const min = dates[0];
+  ].filter(d => d >= TERM_START).sort();
+  const min = TERM_START;
   const max = dates[dates.length - 1];
   ['startDate', 'endDate'].forEach(id => {
     const el = document.getElementById(id);

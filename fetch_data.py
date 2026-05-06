@@ -4,7 +4,9 @@ Fetch Trump approval + generic ballot (Nate Silver / 538) + U.S. gas prices (EIA
 
 Approval source:  https://natesilver.net  (Google Sheets CSV)
 Generic ballot:   https://natesilver.net  (Google Sheets CSV)
-Gas source: EIA API v2, series EMM_EPMRR_PTE_NUS_DPG (weekly retail regular).
+Gas source: EIA API v2, series EMM_EPMR_PTE_NUS_DPG (weekly U.S. regular, all formulations).
+
+All series are filtered to dates >= TERM_START (Trump's 2nd-term inauguration).
 
 Usage:
     python fetch_data.py
@@ -40,6 +42,7 @@ GENERIC_BALLOT_CSV = (
 )
 
 ROLLING_WINDOW = 5  # days
+TERM_START = date(2025, 1, 20)  # Trump's 2nd-term inauguration
 
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
@@ -117,6 +120,7 @@ def fetch_approval() -> dict[str, float]:
     if not polls:
         raise RuntimeError("No approval polls parsed")
     result = _weighted_rolling_avg(polls)
+    result = {d: v for d, v in result.items() if d >= TERM_START.isoformat()}
     print(f"  {len(polls)} polls → {len(result)} daily pts  latest={max(result)} net={result[max(result)]:+.2f}%")
     return result
 
@@ -132,6 +136,7 @@ def fetch_generic_ballot() -> dict[str, float]:
     if not polls:
         raise RuntimeError("No generic ballot polls parsed")
     result = _weighted_rolling_avg(polls)
+    result = {d: v for d, v in result.items() if d >= TERM_START.isoformat()}
     print(f"  {len(polls)} polls → {len(result)} daily pts  latest={max(result)} D-R={result[max(result)]:+.2f}%")
     return result
 
@@ -145,7 +150,7 @@ def fetch_gas_prices() -> dict[str, float]:
         f"?api_key={EIA_API_KEY}"
         "&frequency=weekly"
         "&data[0]=value"
-        "&facets[series][]=EMM_EPMRR_PTE_NUS_DPG"
+        "&facets[series][]=EMM_EPMR_PTE_NUS_DPG"
         "&sort[0][column]=period"
         "&sort[0][direction]=desc"
         "&length=520"
@@ -156,7 +161,11 @@ def fetch_gas_prices() -> dict[str, float]:
     payload = r.json()
     prices: dict[str, float] = {}
     for item in payload.get("response", {}).get("data", []):
+        if item["period"] < TERM_START.isoformat():
+            continue
         prices[item["period"]] = round(float(item["value"]), 3)
+    if not prices:
+        raise RuntimeError("No gas price observations after term start")
     print(f"  {len(prices)} weekly observations  latest={max(prices)} ${prices[max(prices)]}")
     return prices
 
@@ -206,7 +215,7 @@ def main() -> None:
         gas = fetch_gas_prices()
         (DATA_DIR / "gas_prices.json").write_text(json.dumps({
             "updated": now,
-            "source":  "EIA (EMM_EPMRR_PTE_NUS_DPG)",
+            "source":  "EIA (EMM_EPMR_PTE_NUS_DPG, U.S. regular all formulations)",
             "unit":    "USD per gallon",
             "data":    gas,
         }, indent=2))
