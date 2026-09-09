@@ -1,8 +1,9 @@
 {
-  "updated": "2026-09-08T18:02:04.064277Z",
+  "updated": "2026-09-09T17:55:57.408923Z",
   "source": "EIA (EMM_EPMR_PTE_NUS_DPG, U.S. regular all formulations)",
   "unit": "USD per gallon",
   "data": {
+    "2026-09-07": 4.157,
     "2026-08-31": 4.071,
     "2026-08-24": 4.085,
     "2026-08-17": 4.049,
